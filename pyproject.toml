@@ -1,0 +1,31 @@
+[project]
+name = "s1000d-mcp"
+version = "0.1.0"
+description = "MCP server exposing S1000D structured-authoring review tools (schema validation, cross-reference checking, applicability, LLM-assisted fixes)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Ross Shelton" }]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "lxml>=5.0.0",
+]
+
+[project.scripts]
+s1000d-mcp = "s1000d_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/s1000d_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
