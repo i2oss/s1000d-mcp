@@ -17,23 +17,72 @@ steps in someone else's workflow.
 
 This project reimplements the *spirit* of that tooling as a set of MCP tools an LLM
 agent can call directly — and then chains those tools into a single agentic review
-workflow via a `SKILL.md` — using only public S1000D schema documentation and
+workflow via a `SKILL.md` — using a hand-built subset schema modeled on S1000D's
+publicly documented structure (the official XSDs are only distributed through a
+registered-user portal, not a plain download — see [Schema](#schema) below) and
 entirely hand-built, non-proprietary sample data modules. No proprietary or
 work-related content is used anywhere in this repository.
 
-## Planned tools
+## Tools
 
-| Tool | Purpose |
-|---|---|
-| `validate_xml_schema` | Validate a data module against the public S1000D XSD; return structured errors with line numbers. |
-| `check_cross_references` | Parse a directory of data modules, build a reference graph (DMC / graphic references), flag dangling or orphaned references. |
-| `generate_data_module_skeleton` | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title. |
-| `check_applicability` | Validate applicability annotations against a sample Applicability Cross-reference Table (ACT). |
-| `suggest_fix` | Given a validation error and its surrounding XML context, call the Anthropic API (with an S1000D-authoring-rules system prompt) for a suggested corrected snippet and explanation. |
+| Tool | Status | Purpose |
+|---|---|---|
+| `validate_xml_schema` | ✅ implemented | Validate a data module against the project's subset S1000D XSD; return structured errors with line numbers. |
+| `check_cross_references` | planned | Parse a directory of data modules, build a reference graph (DMC / graphic references), flag dangling or orphaned references. |
+| `generate_data_module_skeleton` | planned | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title. |
+| `check_applicability` | planned | Validate applicability annotations against a sample Applicability Cross-reference Table (ACT). |
+| `suggest_fix` | planned | Given a validation error and its surrounding XML context, call the Anthropic API (with an S1000D-authoring-rules system prompt) for a suggested corrected snippet and explanation. |
 
 On top of the individual tools, a `review-data-module` `SKILL.md` chains them into one
 workflow: validate → check cross-references → check applicability → `suggest_fix` for
 each failure → summarize findings in a report.
+
+## Schema
+
+The official S1000D XSDs are distributed only through the S1000D Council's
+registered-user portal (`users.s1000d.org`) — free to register, but not a
+plain public download, so this repo can't redistribute or auto-fetch them.
+Instead, [`schemas/s1000d_mcp_subset.xsd`](schemas/s1000d_mcp_subset.xsd) is a
+hand-built schema that models the real structural shape of a data module
+(DMC, language/issue metadata, title, status/security/applicability/BREX
+reference, QA, and descriptive/procedural content with inline `dmRef` /
+`graphicRef` cross-references) closely enough to exercise genuine schema
+validation — required elements, element order, attribute patterns, and
+enumerations — against realistic sample data. It is **not** one of the
+official S1000D schemas; closing that gap (or adding a mode that points at a
+real, user-supplied schema set) is a roadmap item.
+
+The sample corpus in [`samples/`](samples/) is entirely fictional: a made-up
+aircraft ("Meridian M100") and its auxiliary power unit. `samples/valid/`
+has one schema-conformant data module; `samples/invalid/` has two that are
+deliberately broken in different ways (bad DMC pattern + wrong element
+order; invalid enumeration + missing required element + malformed date),
+used by the test suite to check both the pass and fail paths.
+
+### Example
+
+```
+$ uv run python -c "
+from s1000d_mcp.server import validate_xml_schema
+import json
+print(json.dumps(validate_xml_schema(
+    'samples/invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML'
+), indent=2))
+"
+{
+  "file": "/.../samples/invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML",
+  "schema": "/.../schemas/s1000d_mcp_subset.xsd",
+  "valid": false,
+  "errors": [
+    {
+      "line": 6,
+      "column": 0,
+      "level": "error",
+      "message": "Element 'language': This element is not expected. Expected is ( dmCode )."
+    }
+  ]
+}
+```
 
 ## Status
 
@@ -81,8 +130,11 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 
 ## Roadmap
 
-- [ ] Core tool set (schema validation, cross-references, skeleton generation,
-      applicability, `suggest_fix`)
+- [x] `validate_xml_schema` (schema validation)
+- [ ] `check_cross_references`
+- [ ] `generate_data_module_skeleton`
+- [ ] `check_applicability`
+- [ ] `suggest_fix`
 - [ ] `review-data-module` SKILL.md
 - [ ] GitHub Actions CI
 - [ ] `v0.1.0` release

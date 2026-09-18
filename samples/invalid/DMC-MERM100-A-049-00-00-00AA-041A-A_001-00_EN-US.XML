@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dmodule xmlns="urn:s1000d-mcp:schema-subset:2026">
+  <identAndStatusSection>
+    <dmAddress>
+      <dmIdent>
+        <dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049"
+                 subSystemCode="0" subSubSystemCode="0" assyCode="00AA"
+                 disassyCode="00" disassyCodeVariant="A" infoCode="041"
+                 infoCodeVariant="A" itemLocationCode="A"/>
+        <language languageIsoCode="en" countryIsoCode="US"/>
+        <issueInfo issueNumber="001" inWork="00"/>
+      </dmIdent>
+      <dmAddressItems>
+        <issueDate year="2026" month="13" day="18"/>
+        <dmTitle>
+          <techName>Auxiliary Power Unit Inlet Filter</techName>
+          <infoName>Install Procedure</infoName>
+        </dmTitle>
+      </dmAddressItems>
+    </dmAddress>
+    <dmStatus issueType="final">
+      <responsiblePartnerCompany enterpriseCode="MRD01">Meridian Aerospace (fictional)</responsiblePartnerCompany>
+      <originator enterpriseCode="MRD01">Meridian Aerospace (fictional)</originator>
+      <applic>
+        <displayText>All Meridian M100 aircraft</displayText>
+      </applic>
+      <qualityAssurance>
+        <unverified/>
+      </qualityAssurance>
+    </dmStatus>
+  </identAndStatusSection>
+  <content>
+    <procedure>
+      <mainProcedure>
+        <proceduralStep>
+          <para>Install the inlet filter element and reconnect the inlet duct clamp.</para>
+        </proceduralStep>
+      </mainProcedure>
+    </procedure>
+  </content>
+</dmodule>
