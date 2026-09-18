@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dmodule xmlns="urn:s1000d-mcp:schema-subset:2026">
+  <identAndStatusSection>
+    <dmAddress>
+      <dmIdent>
+        <dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049"
+                 subSystemCode="0" subSubSystemCode="0" assyCode="00AA"
+                 disassyCode="00" disassyCodeVariant="A" infoCode="022"
+                 infoCodeVariant="A" itemLocationCode="A"/>
+        <language languageIsoCode="en" countryIsoCode="US"/>
+        <issueInfo issueNumber="001" inWork="00"/>
+      </dmIdent>
+      <dmAddressItems>
+        <issueDate year="2026" month="09" day="18"/>
+        <dmTitle>
+          <techName>Auxiliary Power Unit</techName>
+          <infoName>Description</infoName>
+        </dmTitle>
+      </dmAddressItems>
+    </dmAddress>
+    <dmStatus issueType="new">
+      <security securityClassification="01"/>
+      <responsiblePartnerCompany enterpriseCode="MRD01">Meridian Aerospace (fictional)</responsiblePartnerCompany>
+      <originator enterpriseCode="MRD01">Meridian Aerospace (fictional)</originator>
+      <applic>
+        <displayText>All Meridian M100 aircraft</displayText>
+      </applic>
+      <qualityAssurance>
+        <unverified/>
+      </qualityAssurance>
+    </dmStatus>
+  </identAndStatusSection>
+  <content>
+    <description>
+      <para>The Auxiliary Power Unit (APU) is a small gas-turbine unit installed in the tailcone that supplies electrical power and bleed air when the main engines are not running. Refer to <graphicRef infoEntityIdent="ICN-MERM10012A00-001"/> for a general arrangement diagram.</para>
+      <para>For the inlet filter remove procedure, see <dmRef><dmRefIdent><dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049" subSystemCode="0" subSubSystemCode="0" assyCode="00AA" disassyCode="00" disassyCodeVariant="A" infoCode="040" infoCodeVariant="A" itemLocationCode="A"/></dmRefIdent></dmRef>. For the install procedure, see <dmRef><dmRefIdent><dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049" subSystemCode="0" subSubSystemCode="0" assyCode="00AA" disassyCode="00" disassyCodeVariant="A" infoCode="041" infoCodeVariant="A" itemLocationCode="A"/></dmRefIdent></dmRef>.</para>
+    </description>
+  </content>
+</dmodule>

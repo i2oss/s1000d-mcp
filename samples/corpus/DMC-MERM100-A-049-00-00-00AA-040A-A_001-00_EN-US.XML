@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dmodule xmlns="urn:s1000d-mcp:schema-subset:2026">
+  <identAndStatusSection>
+    <dmAddress>
+      <dmIdent>
+        <dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049"
+                 subSystemCode="0" subSubSystemCode="0" assyCode="00AA"
+                 disassyCode="00" disassyCodeVariant="A" infoCode="040"
+                 infoCodeVariant="A" itemLocationCode="A"/>
+        <language languageIsoCode="en" countryIsoCode="US"/>
+        <issueInfo issueNumber="001" inWork="00"/>
+      </dmIdent>
+      <dmAddressItems>
+        <issueDate year="2026" month="09" day="18"/>
+        <dmTitle>
+          <techName>Auxiliary Power Unit Inlet Filter</techName>
+          <infoName>Remove Procedure</infoName>
+        </dmTitle>
+      </dmAddressItems>
+    </dmAddress>
+    <dmStatus issueType="new">
+      <security securityClassification="01"/>
+      <responsiblePartnerCompany enterpriseCode="MRD01">Meridian Aerospace (fictional)</responsiblePartnerCompany>
+      <originator enterpriseCode="MRD01">Meridian Aerospace (fictional)</originator>
+      <applic>
+        <displayText>All Meridian M100 aircraft</displayText>
+      </applic>
+      <brexDmRef>
+        <dmRefIdent>
+          <dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="000"
+                   subSystemCode="0" subSubSystemCode="0" assyCode="00AA"
+                   disassyCode="00" disassyCodeVariant="A" infoCode="022"
+                   infoCodeVariant="A" itemLocationCode="A"/>
+        </dmRefIdent>
+      </brexDmRef>
+      <qualityAssurance>
+        <unverified/>
+      </qualityAssurance>
+    </dmStatus>
+  </identAndStatusSection>
+  <content>
+    <procedure>
+      <preliminaryRqmts>Review the general description of the Auxiliary Power Unit before starting this procedure. See <dmRef><dmRefIdent><dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="049" subSystemCode="0" subSubSystemCode="0" assyCode="00AA" disassyCode="00" disassyCodeVariant="A" infoCode="022" infoCodeVariant="A" itemLocationCode="A"/></dmRefIdent></dmRef> for the system overview.</preliminaryRqmts>
+      <mainProcedure>
+        <proceduralStep>
+          <para>Open the auxiliary power unit access panel. Refer to <graphicRef infoEntityIdent="ICN-MERM10012A00-001"/> for panel fastener locations.</para>
+        </proceduralStep>
+        <proceduralStep>
+          <para>Disconnect the inlet duct clamp and remove the inlet filter element.</para>
+        </proceduralStep>
+        <proceduralStep>
+          <para>Inspect the filter element for contamination and discard if damaged.</para>
+        </proceduralStep>
+      </mainProcedure>
+      <closeRqmts>Close and secure the auxiliary power unit access panel.</closeRqmts>
+    </procedure>
+  </content>
+</dmodule>

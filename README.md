@@ -28,7 +28,7 @@ work-related content is used anywhere in this repository.
 | Tool | Status | Purpose |
 |---|---|---|
 | `validate_xml_schema` | ✅ implemented | Validate a data module against the project's subset S1000D XSD; return structured errors with line numbers. |
-| `check_cross_references` | planned | Parse a directory of data modules, build a reference graph (DMC / graphic references), flag dangling or orphaned references. |
+| `check_cross_references` | ✅ implemented | Parse a directory of data modules, build a DMC-keyed reference graph from their content, flag dangling references and orphaned modules. |
 | `generate_data_module_skeleton` | planned | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title. |
 | `check_applicability` | planned | Validate applicability annotations against a sample Applicability Cross-reference Table (ACT). |
 | `suggest_fix` | planned | Given a validation error and its surrounding XML context, call the Anthropic API (with an S1000D-authoring-rules system prompt) for a suggested corrected snippet and explanation. |
@@ -53,11 +53,25 @@ official S1000D schemas; closing that gap (or adding a mode that points at a
 real, user-supplied schema set) is a roadmap item.
 
 The sample corpus in [`samples/`](samples/) is entirely fictional: a made-up
-aircraft ("Meridian M100") and its auxiliary power unit. `samples/valid/`
-has one schema-conformant data module; `samples/invalid/` has two that are
-deliberately broken in different ways (bad DMC pattern + wrong element
-order; invalid enumeration + missing required element + malformed date),
-used by the test suite to check both the pass and fail paths.
+aircraft ("Meridian M100"), its auxiliary power unit, and a small fuel
+subsystem. Three directories, each serving a different tool's tests:
+
+- `samples/corpus/` — 7 schema-valid, interlinked data modules (an APU
+  description, its remove/install inlet-filter procedures, an electrical
+  interface description, a deliberately standalone maintenance-schedule
+  description, and a two-module fuel-system pair that cross-references
+  back into the APU description). Used by both `validate_xml_schema`
+  (all pass) and `check_cross_references` (0 dangling references; 3
+  modules come out orphaned because nothing in the corpus points to them).
+- `samples/schema-invalid/` — 2 modules deliberately broken in different
+  ways (bad DMC pattern + wrong element order; invalid enumeration +
+  missing required element + malformed date), for `validate_xml_schema`'s
+  failure path.
+- `samples/broken-refs/` — a copy of the clean corpus with two `dmRef`
+  targets deliberately pointed at DMCs that don't exist in the directory
+  (one same-system, one cross-system), for `check_cross_references`'s
+  failure path. Still fully schema-valid — a dangling reference is a
+  semantic problem, not a schema violation.
 
 ### Example
 
@@ -131,7 +145,7 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 ## Roadmap
 
 - [x] `validate_xml_schema` (schema validation)
-- [ ] `check_cross_references`
+- [x] `check_cross_references`
 - [ ] `generate_data_module_skeleton`
 - [ ] `check_applicability`
 - [ ] `suggest_fix`

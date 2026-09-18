@@ -11,9 +11,9 @@ import pytest
 
 from s1000d_mcp.server import REPO_ROOT, validate_xml_schema
 
-VALID_DM = "samples/valid/DMC-MERM100-A-049-00-00-00AA-040A-A_001-00_EN-US.XML"
-BAD_DMC_ORDER_DM = "samples/invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML"
-BAD_ENUM_DM = "samples/invalid/DMC-MERM100-A-049-00-00-00AA-041A-A_001-00_EN-US.XML"
+VALID_DM = "samples/corpus/DMC-MERM100-A-049-00-00-00AA-040A-A_001-00_EN-US.XML"
+BAD_DMC_ORDER_DM = "samples/schema-invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML"
+BAD_ENUM_DM = "samples/schema-invalid/DMC-MERM100-A-049-00-00-00AA-041A-A_001-00_EN-US.XML"
 
 
 def test_valid_sample_passes_with_no_errors():
@@ -46,7 +46,7 @@ def test_bad_enum_missing_element_and_bad_date_are_all_reported():
 
 
 def test_missing_file_reports_a_fatal_error_instead_of_raising():
-    result = validate_xml_schema("samples/invalid/does-not-exist.XML")
+    result = validate_xml_schema("samples/schema-invalid/does-not-exist.XML")
     assert result["valid"] is False
     assert result["errors"][0]["level"] == "fatal"
     assert "not found" in result["errors"][0]["message"].lower()

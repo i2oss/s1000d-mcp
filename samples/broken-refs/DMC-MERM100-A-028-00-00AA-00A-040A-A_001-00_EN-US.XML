@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dmodule xmlns="urn:s1000d-mcp:schema-subset:2026">
+  <identAndStatusSection>
+    <dmAddress>
+      <dmIdent>
+        <dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="028"
+                 subSystemCode="0" subSubSystemCode="0" assyCode="00AA"
+                 disassyCode="00" disassyCodeVariant="A" infoCode="040"
+                 infoCodeVariant="A" itemLocationCode="A"/>
+        <language languageIsoCode="en" countryIsoCode="US"/>
+        <issueInfo issueNumber="001" inWork="00"/>
+      </dmIdent>
+      <dmAddressItems>
+        <issueDate year="2026" month="09" day="18"/>
+        <dmTitle>
+          <techName>Fuel Shutoff Valve</techName>
+          <infoName>Replace Seal Procedure</infoName>
+        </dmTitle>
+      </dmAddressItems>
+    </dmAddress>
+    <dmStatus issueType="new">
+      <security securityClassification="01"/>
+      <responsiblePartnerCompany enterpriseCode="MRD01">Meridian Aerospace (fictional)</responsiblePartnerCompany>
+      <originator enterpriseCode="MRD01">Meridian Aerospace (fictional)</originator>
+      <applic>
+        <displayText>All Meridian M100 aircraft</displayText>
+      </applic>
+      <qualityAssurance>
+        <unverified/>
+      </qualityAssurance>
+    </dmStatus>
+  </identAndStatusSection>
+  <content>
+    <procedure>
+      <preliminaryRqmts>Review <dmRef><dmRefIdent><dmCode modelIdentCode="MERM100" systemDiffCode="A" systemCode="028" subSystemCode="0" subSubSystemCode="0" assyCode="00AA" disassyCode="00" disassyCodeVariant="A" infoCode="022" infoCodeVariant="A" itemLocationCode="A"/></dmRefIdent></dmRef> before starting this procedure.</preliminaryRqmts>
+      <mainProcedure>
+        <proceduralStep>
+          <para>Drain residual fuel from the valve body. Refer to <graphicRef infoEntityIdent="ICN-MERM10028AA-003"/> for drain plug location.</para>
+        </proceduralStep>
+        <proceduralStep>
+          <para>Remove the old seal and install a new seal of the correct part number.</para>
+        </proceduralStep>
+      </mainProcedure>
+      <closeRqmts>Refill and leak-check the fuel line.</closeRqmts>
+    </procedure>
+  </content>
+</dmodule>
