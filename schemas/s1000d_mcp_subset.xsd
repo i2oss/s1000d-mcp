@@ -212,9 +212,21 @@
     </xs:simpleContent>
   </xs:complexType>
 
+  <xs:complexType name="applicPropertyType">
+    <xs:attribute name="applicPropertyIdent" type="xs:string" use="required"/>
+    <xs:attribute name="applicPropertyValue" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <!-- displayText is always required (a human-readable applicability
+       summary); applicProperty is an optional, repeatable structured
+       assertion checkable against an Applicability Cross-reference Table
+       (ACT); see check_applicability and schemas/s1000d_mcp_sample_act.xml.
+       Added week 4; backward compatible with every existing data module,
+       since applicProperty is 0..unbounded. -->
   <xs:complexType name="applicType">
     <xs:sequence>
       <xs:element name="displayText" type="xs:string"/>
+      <xs:element name="applicProperty" type="s1kdmcp:applicPropertyType" minOccurs="0" maxOccurs="unbounded"/>
     </xs:sequence>
   </xs:complexType>
 

@@ -29,8 +29,8 @@ work-related content is used anywhere in this repository.
 |---|---|---|
 | `validate_xml_schema` | ✅ implemented | Validate a data module against the project's subset S1000D XSD; return structured errors with line numbers. |
 | `check_cross_references` | ✅ implemented | Parse a directory of data modules, build a DMC-keyed reference graph from their content, flag dangling references and orphaned modules. |
-| `generate_data_module_skeleton` | planned | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title. |
-| `check_applicability` | planned | Validate applicability annotations against a sample Applicability Cross-reference Table (ACT). |
+| `generate_data_module_skeleton` | ✅ implemented | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title; self-validates before returning. |
+| `check_applicability` | ✅ implemented | Check a data module's structured applicability assertions against a sample Applicability Cross-reference Table (ACT). |
 | `suggest_fix` | planned | Given a validation error and its surrounding XML context, call the Anthropic API (with an S1000D-authoring-rules system prompt) for a suggested corrected snippet and explanation. |
 
 On top of the individual tools, a `review-data-module` `SKILL.md` chains them into one
@@ -72,6 +72,11 @@ subsystem. Three directories, each serving a different tool's tests:
   (one same-system, one cross-system), for `check_cross_references`'s
   failure path. Still fully schema-valid — a dangling reference is a
   semantic problem, not a schema violation.
+- `samples/applicability-invalid/` — 2 modules, also fully schema-valid,
+  that assert applicability the ACT rejects: one against an attribute the
+  ACT never defines, one against a real attribute with a value outside
+  its allowed set. For `check_applicability`'s failure path; two modules
+  in `samples/corpus/` carry the passing case.
 
 ### Example
 
@@ -80,11 +85,11 @@ $ uv run python -c "
 from s1000d_mcp.server import validate_xml_schema
 import json
 print(json.dumps(validate_xml_schema(
-    'samples/invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML'
+    'samples/schema-invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML'
 ), indent=2))
 "
 {
-  "file": "/.../samples/invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML",
+  "file": "/.../samples/schema-invalid/DMC-MERM100-A-BAD-00-00-00AA-040A-A_001-00_EN-US.XML",
   "schema": "/.../schemas/s1000d_mcp_subset.xsd",
   "valid": false,
   "errors": [
@@ -97,6 +102,20 @@ print(json.dumps(validate_xml_schema(
   ]
 }
 ```
+
+## Applicability
+
+[`schemas/s1000d_mcp_sample_act.xml`](schemas/s1000d_mcp_sample_act.xml) is a
+small, hand-built Applicability Cross-reference Table: it defines three
+product attributes for the fictional Meridian M100 (`engineVariant`,
+`avionicsSuite`, `apuOption`) and each one's allowed values. A data module
+may assert applicability against it with `<applicProperty
+applicPropertyIdent="..." applicPropertyValue="..."/>` inside its `<applic>`
+element -- an addition to the subset XSD made this week, backward
+compatible with every earlier data module since it's optional and
+repeatable. `check_applicability` checks those assertions and reports
+unknown attributes and out-of-range values; a module with none is valid,
+not flagged.
 
 ## Status
 
@@ -146,8 +165,8 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 
 - [x] `validate_xml_schema` (schema validation)
 - [x] `check_cross_references`
-- [ ] `generate_data_module_skeleton`
-- [ ] `check_applicability`
+- [x] `generate_data_module_skeleton`
+- [x] `check_applicability`
 - [ ] `suggest_fix`
 - [ ] `review-data-module` SKILL.md
 - [ ] GitHub Actions CI

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  s1000d-mcp sample Applicability Cross-reference Table (ACT)
+  =============================================================
+  A hand-built, simplified stand-in for a real S1000D ACT: it defines the
+  product attributes that this fictional aircraft's data modules may
+  assert applicability against, and the allowed value for each one. A
+  data module asserts applicability with <applicProperty
+  applicPropertyIdent="..." applicPropertyValue="..."/> inside its
+  <applic> element (see schemas/s1000d_mcp_subset.xsd); check_applicability
+  checks those assertions against this file. As with the subset XSD, this
+  is not one of the S1000D Council's official ACT formats; it exists so
+  check_applicability has something real to check against.
+-->
+<act xmlns="urn:s1000d-mcp:schema-subset:2026:act" modelIdentCode="MERM100">
+  <productAttribute applicPropertyIdent="engineVariant" displayName="Engine Variant">
+    <value applicPropertyValue="TurboProp" displayName="Turboprop engine"/>
+    <value applicPropertyValue="Piston" displayName="Piston engine"/>
+  </productAttribute>
+  <productAttribute applicPropertyIdent="avionicsSuite" displayName="Avionics Suite">
+    <value applicPropertyValue="Standard" displayName="Standard avionics"/>
+    <value applicPropertyValue="Advanced" displayName="Advanced avionics (glass cockpit)"/>
+  </productAttribute>
+  <productAttribute applicPropertyIdent="apuOption" displayName="APU Option">
+    <value applicPropertyValue="Fitted" displayName="APU fitted"/>
+    <value applicPropertyValue="NotFitted" displayName="APU not fitted"/>
+  </productAttribute>
+</act>

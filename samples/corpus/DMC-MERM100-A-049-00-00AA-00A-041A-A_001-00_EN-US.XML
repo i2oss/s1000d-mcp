@@ -23,7 +23,8 @@
       <responsiblePartnerCompany enterpriseCode="MRD01">Meridian Aerospace (fictional)</responsiblePartnerCompany>
       <originator enterpriseCode="MRD01">Meridian Aerospace (fictional)</originator>
       <applic>
-        <displayText>All Meridian M100 aircraft</displayText>
+        <displayText>Meridian M100 aircraft with the APU option fitted</displayText>
+        <applicProperty applicPropertyIdent="apuOption" applicPropertyValue="Fitted"/>
       </applic>
       <qualityAssurance>
         <unverified/>
