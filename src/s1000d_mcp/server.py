@@ -14,18 +14,29 @@ directory references them). Week 4 adds `generate_data_module_skeleton`
 self-validated against the same subset XSD before it's returned) and
 `check_applicability`, which checks a data module's <applicProperty>
 assertions against a sample Applicability Cross-reference Table (ACT;
-see schemas/s1000d_mcp_sample_act.xml).
+see schemas/s1000d_mcp_sample_act.xml). Week 5 adds `suggest_fix`, which
+sends one validation error plus the schema and the target data module to
+the Anthropic API (forced tool-use, so the response is always structured)
+and returns a proposed corrected XML snippet with an explanation.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+import anthropic
+from dotenv import load_dotenv
 from lxml import etree
 from mcp.server.mcpserver import MCPServer
+
+from .prompts import PROPOSE_FIX_TOOL, SYSTEM_PROMPT
+
+load_dotenv()
 
 mcp = MCPServer(
     name="s1000d-mcp",
@@ -47,6 +58,10 @@ NSMAP = {"s1kdmcp": S1KDMCP_NS}
 ACT_NS = "urn:s1000d-mcp:schema-subset:2026:act"
 ACT_NSMAP = {"act": ACT_NS}
 DEFAULT_ACT_PATH = REPO_ROOT / "schemas" / "s1000d_mcp_sample_act.xml"
+
+# Default Claude model for suggest_fix if neither the `model` argument nor
+# the ANTHROPIC_MODEL environment variable is set.
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 
 @mcp.tool()
@@ -661,6 +676,157 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
         "violations": violations,
         "act_attributes": {ident: sorted(values) for ident, values in attributes.items()},
         "parse_errors": parse_errors,
+    }
+
+
+class SuggestFixUnavailable(Exception):
+    """Raised internally when suggest_fix can't even attempt an API call
+    (missing key, malformed response, etc.) so the tool can turn it into
+    a structured, non-raising result instead of an exception."""
+
+
+def _get_anthropic_client() -> anthropic.Anthropic:
+    """Build an Anthropic client from the ANTHROPIC_API_KEY environment
+    variable (loaded from a local .env file by load_dotenv() above, or
+    from the real environment). Never hardcoded, never committed."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise SuggestFixUnavailable(
+            "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and "
+            "add your own key, or export it in your shell."
+        )
+    return anthropic.Anthropic(api_key=api_key)
+
+
+def _call_propose_fix_api(
+    client: anthropic.Anthropic,
+    model: str,
+    system_prompt: str,
+    user_message: str,
+) -> Any:
+    """Call the Messages API, forcing use of the propose_fix tool (via
+    tool_choice) so the model always returns structured output instead of
+    free text that would need to be parsed and could fail to parse."""
+    return client.messages.create(
+        model=model,
+        max_tokens=2048,
+        system=system_prompt,
+        tools=[PROPOSE_FIX_TOOL],
+        tool_choice={"type": "tool", "name": PROPOSE_FIX_TOOL["name"]},
+        messages=[{"role": "user", "content": user_message}],
+    )
+
+
+def _extract_tool_input(message: Any) -> dict[str, Any]:
+    """Pull the propose_fix tool call's input out of a Messages API
+    response. Raises SuggestFixUnavailable (rather than letting a KeyError
+    or IndexError escape) if the expected tool_use block isn't present --
+    tool_choice forcing should prevent that, but suggest_fix should still
+    never raise on an unexpected response shape."""
+    for block in message.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == PROPOSE_FIX_TOOL["name"]:
+            return dict(block.input)
+    raise SuggestFixUnavailable(
+        "Model response did not include the expected propose_fix tool call."
+    )
+
+
+@mcp.tool()
+def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -> dict[str, Any]:
+    """Ask Claude to propose a fix for one validation error in a data module.
+
+    Sends the full subset XSD schema, the full target data module, and the
+    one error to fix to the Anthropic API, with a system prompt describing
+    this project's S1000D subset rules and a forced `propose_fix` tool
+    call so the response is always structured (never free text to parse).
+
+    Args:
+        dm_path: Path to the data module XML file the error was found in.
+            Relative paths are resolved against the repository root.
+        error: One error/violation dict -- e.g. an entry from
+            validate_xml_schema's "errors" list, check_cross_references'
+            "violations" list, or check_applicability's "violations"
+            list. Any JSON-serializable dict describing the problem
+            works.
+        model: Optional Claude model ID/alias. Defaults to the
+            ANTHROPIC_MODEL environment variable, or DEFAULT_MODEL
+            ("claude-haiku-4-5") if that isn't set either.
+
+    Returns:
+        A dict with:
+          - ok: True if a suggestion was successfully generated
+          - file: the resolved (or, on success, repo-relative) data
+              module path
+          - model: the model actually used
+          - explanation, corrected_xml, confidence: present when ok is
+              True
+          - reason: a human-readable explanation of failure when ok is
+              False (missing file, missing API key, API error, malformed
+              response, etc.) -- this tool never raises
+    """
+    target = _resolve(dm_path)
+    used_model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+    if not target.exists():
+        return {
+            "ok": False,
+            "file": str(target),
+            "model": used_model,
+            "reason": f"File not found: {target}",
+        }
+
+    try:
+        dm_text = target.read_text()
+    except OSError as exc:
+        return {
+            "ok": False,
+            "file": str(target),
+            "model": used_model,
+            "reason": f"Could not read file: {exc}",
+        }
+
+    try:
+        schema_text = DEFAULT_SCHEMA_PATH.read_text()
+    except OSError as exc:
+        return {
+            "ok": False,
+            "file": str(target),
+            "model": used_model,
+            "reason": f"Could not read schema: {exc}",
+        }
+
+    user_message = (
+        f"Schema ({_rel(DEFAULT_SCHEMA_PATH)}):\n```xml\n{schema_text}\n```\n\n"
+        f"Data module ({_rel(target)}):\n```xml\n{dm_text}\n```\n\n"
+        f"Validation error to fix:\n```json\n{json.dumps(error, indent=2, default=str)}\n```"
+    )
+
+    try:
+        client = _get_anthropic_client()
+        response = _call_propose_fix_api(client, used_model, SYSTEM_PROMPT, user_message)
+        tool_input = _extract_tool_input(response)
+    except SuggestFixUnavailable as exc:
+        return {
+            "ok": False,
+            "file": str(target),
+            "model": used_model,
+            "reason": str(exc),
+        }
+    except anthropic.APIError as exc:
+        return {
+            "ok": False,
+            "file": str(target),
+            "model": used_model,
+            "reason": f"Anthropic API error: {exc}",
+        }
+
+    return {
+        "ok": True,
+        "file": _rel(target),
+        "model": used_model,
+        "explanation": tool_input.get("explanation"),
+        "corrected_xml": tool_input.get("corrected_xml"),
+        "confidence": tool_input.get("confidence"),
     }
 
 

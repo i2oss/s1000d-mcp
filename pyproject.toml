@@ -9,6 +9,8 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.2.0",
     "lxml>=5.0.0",
+    "anthropic>=1.7.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.scripts]

@@ -31,11 +31,13 @@ work-related content is used anywhere in this repository.
 | `check_cross_references` | ✅ implemented | Parse a directory of data modules, build a DMC-keyed reference graph from their content, flag dangling references and orphaned modules. |
 | `generate_data_module_skeleton` | ✅ implemented | Scaffold a new, schema-valid empty data module from a template, given DMC parts, info code, and title; self-validates before returning. |
 | `check_applicability` | ✅ implemented | Check a data module's structured applicability assertions against a sample Applicability Cross-reference Table (ACT). |
-| `suggest_fix` | planned | Given a validation error and its surrounding XML context, call the Anthropic API (with an S1000D-authoring-rules system prompt) for a suggested corrected snippet and explanation. |
+| `suggest_fix` | ✅ implemented | Given a validation error and the target data module, call the Anthropic API (with an S1000D-authoring-rules system prompt and forced tool-use) for a suggested corrected XML snippet, a plain-English explanation, and a confidence level. |
 
-On top of the individual tools, a `review-data-module` `SKILL.md` chains them into one
-workflow: validate → check cross-references → check applicability → `suggest_fix` for
-each failure → summarize findings in a report.
+On top of the individual tools, [`skills/review-data-module/SKILL.md`](skills/review-data-module/SKILL.md)
+chains them into one workflow: validate → check cross-references → check applicability
+→ `suggest_fix` for each concrete problem found → summarize findings in a report. It
+never edits a file itself -- every suggested fix is shown to the user to review and
+apply.
 
 ## Schema
 
@@ -117,6 +119,57 @@ repeatable. `check_applicability` checks those assertions and reports
 unknown attributes and out-of-range values; a module with none is valid,
 not flagged.
 
+## LLM-assisted fixes
+
+`suggest_fix(dm_path, error, model=None)` sends the full subset XSD schema, the full
+target data module, and one specific finding (a schema error, a dangling
+cross-reference, or an applicability violation -- any of the earlier tools' output
+entries work as-is) to the Anthropic API. The system prompt in
+[`src/s1000d_mcp/prompts.py`](src/s1000d_mcp/prompts.py) describes this project's
+subset schema's actual structure, and the call forces a `propose_fix` tool use rather
+than free text, so the response is always structured: an `explanation`, a
+`corrected_xml` snippet, and a `confidence` level -- never a raw string to parse and
+hope survived formatting.
+
+The default model is **Claude Haiku 4.5** (`claude-haiku-4-5`) -- one data module plus
+one error is a small, well-defined context per call, so a fast, inexpensive model is
+the right default; override it per call with the `model` argument or globally with the
+`ANTHROPIC_MODEL` environment variable. The API key is read from `ANTHROPIC_API_KEY`
+in the environment (see [Setup](#setup) below) and is never hardcoded, logged, or
+committed. `suggest_fix` never raises: a missing key, a missing file, or an API error
+all come back as a structured `{"ok": false, "reason": "..."}` result instead of an
+exception, matching every other tool in this server.
+
+### Example (illustrative)
+
+```
+$ uv run python -c "
+from s1000d_mcp.server import suggest_fix
+import json
+print(json.dumps(suggest_fix(
+    'samples/schema-invalid/DMC-MERM100-A-049-00-00-00AA-041A-A_001-00_EN-US.XML',
+    error={
+        'line': 9,
+        'column': 0,
+        'level': 'error',
+        'message': \"Element 'dmStatus', attribute 'issueType': 'obsolete' is not a valid value of the local atomic type.\",
+    },
+), indent=2))
+"
+{
+  "ok": true,
+  "file": "samples/schema-invalid/DMC-MERM100-A-049-00-00-00AA-041A-A_001-00_EN-US.XML",
+  "model": "claude-haiku-4-5",
+  "explanation": "The dmStatus element's issueType attribute was set to 'obsolete', which isn't one of the four values this subset schema allows (new, changed, revised, deleted). Based on the surrounding content this looks like a superseded issue, so 'deleted' is the closest valid match -- change it to that.",
+  "corrected_xml": "<dmStatus issueType=\"deleted\">",
+  "confidence": "medium"
+}
+```
+
+(This response is illustrative, not a real API call -- it shows the shape of the
+output, not an actual model completion. Run the command yourself with
+`ANTHROPIC_API_KEY` set to see a real one.)
+
 ## Status
 
 🚧 Early development — see the [roadmap](#roadmap) below and the repo's Issues for
@@ -139,6 +192,16 @@ git clone https://github.com/i2oss/s1000d-mcp.git
 cd s1000d-mcp
 uv sync
 ```
+
+`suggest_fix` needs an Anthropic API key. Copy the example env file and add your own:
+
+```bash
+cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY
+```
+
+`.env` is gitignored and only ever read locally -- every other tool works fine with no
+key set at all.
 
 Run the server:
 
@@ -167,8 +230,8 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 - [x] `check_cross_references`
 - [x] `generate_data_module_skeleton`
 - [x] `check_applicability`
-- [ ] `suggest_fix`
-- [ ] `review-data-module` SKILL.md
+- [x] `suggest_fix`
+- [x] `review-data-module` SKILL.md
 - [ ] GitHub Actions CI
 - [ ] `v0.1.0` release
 - [ ] DITA schema support
