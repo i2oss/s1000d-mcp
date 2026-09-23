@@ -1,8 +1,14 @@
 # S1000D MCP Server
 
+[![CI](https://github.com/i2oss/s1000d-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/i2oss/s1000d-mcp/actions/workflows/ci.yml)
+
 An MCP (Model Context Protocol) server that gives an LLM agent a working toolset for
 reviewing **S1000D** technical publications — the structured-authoring XML standard
 used across aerospace and defense for maintenance and engineering documentation.
+
+![Terminal recording of the review-data-module tool chain: schema validation, cross-reference integrity, and applicability checking run against the sample corpus](docs/demo.gif)
+
+*A real terminal session (recorded with [asciinema](https://asciinema.org) + [agg](https://github.com/asciinema/agg), not staged) running the tools directly against this repo's sample corpus -- the same three checks `review-data-module` chains together.*
 
 ## The problem
 
@@ -38,6 +44,55 @@ chains them into one workflow: validate → check cross-references → check app
 → `suggest_fix` for each concrete problem found → summarize findings in a report. It
 never edits a file itself -- every suggested fix is shown to the user to review and
 apply.
+
+## Architecture
+
+```
+                         ┌─────────────────────────────┐
+                         │   skills/review-data-module   │
+                         │   SKILL.md (agentic workflow)  │
+                         └───────────────┬────────────────┘
+                                          │ chains, in order
+        ┌─────────────────┬──────────────┼──────────────┬─────────────────┐
+        ▼                 ▼              ▼               ▼                 ▼
+ validate_xml_schema  check_cross_   generate_data_  check_          suggest_fix
+                       references     module_skeleton applicability
+        │                 │                              │               │
+        └─────────┬───────┴──────────────────────────────┘               │
+                   ▼                                                     │
+         schemas/s1000d_mcp_subset.xsd                                   │
+         schemas/s1000d_mcp_sample_act.xml                               │
+         samples/**/*.XML  (fictional "Meridian M100" corpus)            │
+                                                                          ▼
+                                                          src/s1000d_mcp/prompts.py
+                                                          (system prompt + forced
+                                                           propose_fix tool schema)
+                                                                          │
+                                                                          ▼
+                                                             Anthropic API (Claude)
+```
+
+`src/s1000d_mcp/server.py` is a single [MCP](https://modelcontextprotocol.io) server
+(`MCPServer`, stdio transport) exposing the five tools above as `@mcp.tool()`
+functions. Every tool takes plain paths/dicts, resolves relative paths against the
+repo root, and returns a structured dict -- none of them raise on bad input (a missing
+file, a malformed DMC, an unreachable API); errors and violations are always data in
+the response, not exceptions, so an agent calling them never has to wrap every call in
+a try/except to keep going. `suggest_fix` is the one tool with a network dependency
+(the Anthropic API); its client construction and API call are factored into small,
+separately-testable functions (`_get_anthropic_client`, `_call_propose_fix_api`,
+`_extract_tool_input`) so the rest of the server has no hidden network calls.
+
+`skills/review-data-module/SKILL.md` is what turns the five independent tools into an
+actual review: it's instructions for an LLM agent (not more Python) describing the
+order to call them in, how to read each one's output, when a finding is worth a
+`suggest_fix` call, and how to summarize the results -- the same chain the demo GIF
+above shows running by hand.
+
+Each tool's tests live in a matching `tests/test_<tool>.py`, run against a shared
+fixture set in `samples/` (see [Schema](#schema) below for what each subdirectory is
+for) plus, for `suggest_fix`, a mocked Anthropic client so the suite never makes a
+real network call.
 
 ## Schema
 
@@ -225,6 +280,10 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 ```
 
 ## Roadmap
+
+Weeks 1-6 built the core server; what's below `v0.1.0` is ongoing, tracked as
+[GitHub Issues](https://github.com/i2oss/s1000d-mcp/issues) and closed incrementally
+rather than treated as a single follow-up dump.
 
 - [x] `validate_xml_schema` (schema validation)
 - [x] `check_cross_references`
