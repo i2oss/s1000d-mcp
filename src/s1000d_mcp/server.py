@@ -960,13 +960,35 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
             "reason": f"Anthropic API error: {exc}",
         }
 
+    # Deterministically validate the structured output before returning it.
+    # Forcing the propose_fix tool call defines the shape, but the model
+    # still fills the fields, so a poisoned or malformed response could send
+    # an off-enum confidence or a missing corrected_xml. Validate here rather
+    # than trust it (OWASP LLM01: define AND validate output formats).
+    explanation = tool_input.get("explanation")
+    corrected_xml = tool_input.get("corrected_xml")
+    confidence = tool_input.get("confidence")
+    if (
+        not isinstance(explanation, str)
+        or not explanation.strip()
+        or not isinstance(corrected_xml, str)
+        or not corrected_xml.strip()
+        or confidence not in ("high", "medium", "low")
+    ):
+        return {
+            "ok": False,
+            "file": file_disp,
+            "model": used_model,
+            "reason": "Model response did not conform to the required propose_fix schema.",
+        }
+
     return {
         "ok": True,
-        "file": _rel(target),
+        "file": file_disp,
         "model": used_model,
-        "explanation": tool_input.get("explanation"),
-        "corrected_xml": tool_input.get("corrected_xml"),
-        "confidence": tool_input.get("confidence"),
+        "explanation": explanation,
+        "corrected_xml": corrected_xml,
+        "confidence": confidence,
     }
 
 
