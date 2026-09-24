@@ -74,7 +74,10 @@ def test_special_characters_in_title_are_escaped():
 def test_write_to_file_then_refuses_to_overwrite_without_flag(tmp_path, monkeypatch):
     import s1000d_mcp.server as server_module
 
-    monkeypatch.setattr(server_module, "REPO_ROOT", tmp_path)
+    # Point the tools' allowed base directory at the temp folder. (Was
+    # REPO_ROOT; the path-boundary hardening resolves writes against
+    # BASE_DIR, so tests set BASE_DIR to keep writes inside the sandbox.)
+    monkeypatch.setattr(server_module, "BASE_DIR", tmp_path)
     output_path = "generated/skeleton.XML"
 
     first = generate_data_module_skeleton(

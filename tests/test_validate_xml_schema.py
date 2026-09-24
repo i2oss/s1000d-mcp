@@ -54,7 +54,9 @@ def test_missing_file_reports_a_fatal_error_instead_of_raising():
 
 def test_default_schema_path_resolves_under_repo_root():
     result = validate_xml_schema(VALID_DM)
-    assert result["schema"] == str(REPO_ROOT / "schemas" / "s1000d_mcp_subset.xsd")
+    # Responses now report paths relative to the base directory rather than
+    # absolute host paths (avoids leaking the install path and username).
+    assert result["schema"] == "schemas/s1000d_mcp_subset.xsd"
 
 
 @pytest.mark.parametrize(

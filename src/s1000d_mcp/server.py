@@ -74,17 +74,44 @@ def ping(message: str = "hello from s1000d-mcp") -> str:
     return f"pong: {message}"
 
 
+# Allowed base directory for every caller-supplied file or directory path.
+# Defaults to the repo root; override with S1000D_MCP_BASE_DIR to point the
+# tools at a separate working area (e.g. a customer's data-module folder).
+BASE_DIR = Path(os.environ.get("S1000D_MCP_BASE_DIR", REPO_ROOT)).resolve()
+
+
+class PathNotAllowed(ValueError):
+    """A caller-supplied path resolved to a location outside BASE_DIR."""
+
+
 def _resolve(path_str: str) -> Path:
-    """Resolve a possibly-relative path against the repo root."""
-    path = Path(path_str)
-    return path if path.is_absolute() else REPO_ROOT / path
+    """Resolve a caller-supplied path and confirm it stays inside BASE_DIR.
+
+    Relative paths are joined to BASE_DIR; absolute paths are taken as-is.
+    Either way the result is fully resolved (following symlinks and
+    collapsing ``..``) and then checked against BASE_DIR. Anything that
+    lands outside -- an absolute path like ``/etc/passwd``, a ``../../``
+    escape, or a symlink inside the base that points out -- raises
+    PathNotAllowed instead of being opened. This is the single choke point
+    that closes arbitrary file read, write/overwrite, and the
+    existence-oracle vectors at once.
+    """
+    candidate = Path(path_str)
+    combined = candidate if candidate.is_absolute() else BASE_DIR / candidate
+    resolved = combined.resolve()
+    if resolved != BASE_DIR and not resolved.is_relative_to(BASE_DIR):
+        raise PathNotAllowed(
+            f"path is outside the allowed directory: {path_str!r}"
+        )
+    return resolved
 
 
 def _rel(path: Path) -> str:
-    """Render a path relative to the repo root when possible, for
-    readable tool output; falls back to the absolute path otherwise."""
+    """Render a path relative to BASE_DIR when possible, for readable tool
+    output that does not leak absolute host paths or usernames; falls back
+    to the absolute path otherwise."""
     try:
-        return str(path.relative_to(REPO_ROOT))
+        return str(path.relative_to(BASE_DIR))
     except ValueError:
         return str(path)
 
@@ -132,56 +159,55 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
           - errors: a list of {line, column, level, message} entries,
             one per schema violation (empty when valid is True)
     """
-    target = _resolve(dm_path)
-    xsd_path = _resolve(schema_path) if schema_path else DEFAULT_SCHEMA_PATH
+    def _fatal(message: str, line=None, column=None) -> list[dict[str, Any]]:
+        return [{"line": line, "column": column, "level": "fatal", "message": message}]
+
+    # Resolve both caller-supplied paths through the boundary check first.
+    # A path outside BASE_DIR is rejected here, before any file is opened,
+    # and reported through the tool's normal structured error shape.
+    try:
+        target = _resolve(dm_path)
+        xsd_path = _resolve(schema_path) if schema_path else DEFAULT_SCHEMA_PATH
+    except PathNotAllowed as exc:
+        return {
+            "file": dm_path,
+            "schema": schema_path if schema_path else _rel(DEFAULT_SCHEMA_PATH),
+            "valid": False,
+            "errors": _fatal(str(exc)),
+        }
+
+    file_disp = _rel(target)
+    schema_disp = _rel(xsd_path)
 
     if not target.exists():
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": f"File not found: {target}",
-                }
-            ],
+            "errors": _fatal(f"File not found: {file_disp}"),
         }
 
+    # XMLSyntaxError added: a malformed schema file otherwise escaped this
+    # block as an unhandled exception (seen in the XXE, traversal, and
+    # error-leakage tests).
     try:
         schema = _load_schema(xsd_path)
-    except (etree.XMLSchemaParseError, OSError) as exc:
+    except (etree.XMLSchemaParseError, etree.XMLSyntaxError, OSError) as exc:
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": f"Schema failed to load: {exc}",
-                }
-            ],
+            "errors": _fatal(f"Schema failed to load: {exc}"),
         }
 
     try:
         doc = etree.parse(str(target))
     except etree.XMLSyntaxError as exc:
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": exc.lineno,
-                    "column": exc.offset,
-                    "level": "fatal",
-                    "message": f"XML is not well-formed: {exc.msg}",
-                }
-            ],
+            "errors": _fatal(f"XML is not well-formed: {exc.msg}", exc.lineno, exc.offset),
         }
 
     is_valid = schema.validate(doc)
@@ -196,8 +222,8 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
     ]
 
     return {
-        "file": str(target),
-        "schema": str(xsd_path),
+        "file": file_disp,
+        "schema": schema_disp,
         "valid": is_valid,
         "errors": errors,
     }
@@ -236,20 +262,26 @@ def check_cross_references(directory: str) -> dict[str, Any]:
             parsed or had no recognizable dmCode; scanning continues past
             these rather than raising
     """
-    dir_path = _resolve(directory)
-    if not dir_path.is_dir():
+    def _empty(directory_disp: str, message: str) -> dict[str, Any]:
         return {
-            "directory": str(dir_path),
+            "directory": directory_disp,
             "module_count": 0,
             "modules": [],
             "edges": [],
             "dangling_references": [],
             "orphaned_modules": [],
             "graphic_references": [],
-            "parse_errors": [
-                {"file": str(dir_path), "message": "Directory not found"}
-            ],
+            "parse_errors": [{"file": directory_disp, "message": message}],
         }
+
+    try:
+        dir_path = _resolve(directory)
+    except PathNotAllowed as exc:
+        return _empty(directory, str(exc))
+
+    dir_disp = _rel(dir_path)
+    if not dir_path.is_dir():
+        return _empty(dir_disp, "Directory not found")
 
     modules: dict[str, dict[str, Any]] = {}
     graphic_references: list[dict[str, Any]] = []
@@ -514,7 +546,21 @@ def generate_data_module_skeleton(
 
     written_path = None
     if output_path:
-        target = _resolve(output_path)
+        # Resolve through the boundary before writing. This is the tool that
+        # could otherwise create or overwrite a file anywhere on the host,
+        # so the check is what closes the arbitrary-write vector.
+        try:
+            target = _resolve(output_path)
+        except PathNotAllowed as exc:
+            return {
+                "xml": xml,
+                "dmc": dmc_key,
+                "filename": filename,
+                "file": None,
+                "valid": is_valid,
+                "errors": errors
+                + [{"line": None, "column": None, "level": "fatal", "message": str(exc)}],
+            }
         if target.exists() and not overwrite:
             return {
                 "xml": xml,
@@ -528,7 +574,7 @@ def generate_data_module_skeleton(
                         "line": None,
                         "column": None,
                         "level": "fatal",
-                        "message": f"{target} already exists; pass overwrite=True to replace it.",
+                        "message": f"{_rel(target)} already exists; pass overwrite=True to replace it.",
                     }
                 ],
             }
@@ -585,8 +631,19 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
             module that couldn't be parsed; scanning continues past
             these rather than raising
     """
-    dir_path = _resolve(directory)
-    act_file = _resolve(act_path) if act_path else DEFAULT_ACT_PATH
+    try:
+        dir_path = _resolve(directory)
+        act_file = _resolve(act_path) if act_path else DEFAULT_ACT_PATH
+    except PathNotAllowed as exc:
+        return {
+            "act": act_path if act_path else _rel(DEFAULT_ACT_PATH),
+            "directory": directory,
+            "module_count": 0,
+            "modules": [],
+            "violations": [],
+            "act_attributes": {},
+            "parse_errors": [{"file": None, "message": str(exc)}],
+        }
 
     empty_result: dict[str, Any] = {
         "act": _rel(act_file),
@@ -600,7 +657,7 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
 
     if not dir_path.is_dir():
         empty_result["parse_errors"].append(
-            {"file": str(dir_path), "message": "Directory not found"}
+            {"file": _rel(dir_path), "message": "Directory not found"}
         )
         return empty_result
 
@@ -764,15 +821,29 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
               False (missing file, missing API key, API error, malformed
               response, etc.) -- this tool never raises
     """
-    target = _resolve(dm_path)
     used_model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+    # Resolve through the boundary before any read -- this is the tool that
+    # would otherwise send an out-of-bounds file's contents to the API, so
+    # the path check is what closes the read-to-exfiltration chain.
+    try:
+        target = _resolve(dm_path)
+    except PathNotAllowed as exc:
+        return {
+            "ok": False,
+            "file": dm_path,
+            "model": used_model,
+            "reason": str(exc),
+        }
+
+    file_disp = _rel(target)
 
     if not target.exists():
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
-            "reason": f"File not found: {target}",
+            "reason": f"File not found: {file_disp}",
         }
 
     try:
@@ -780,7 +851,7 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except OSError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
             "reason": f"Could not read file: {exc}",
         }
@@ -790,7 +861,7 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except OSError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
             "reason": f"Could not read schema: {exc}",
         }
@@ -808,14 +879,14 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except SuggestFixUnavailable as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
             "reason": str(exc),
         }
     except anthropic.APIError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
             "reason": f"Anthropic API error: {exc}",
         }
