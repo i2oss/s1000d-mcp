@@ -66,4 +66,6 @@ def test_missing_directory_reports_a_parse_error_instead_of_raising():
 def test_missing_act_reports_a_parse_error_instead_of_raising():
     result = check_applicability("samples/corpus", act_path="schemas/does-not-exist.xml")
     assert result["module_count"] == 0
-    assert "Failed to load ACT" in result["parse_errors"][0]["message"]
+    # Error messages are sanitized: a generic, path-free message to the
+    # caller (full detail goes to the server log).
+    assert "could not be loaded" in result["parse_errors"][0]["message"]
