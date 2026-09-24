@@ -23,6 +23,7 @@ and returns a proposed corrected XML snippet with an explanation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -35,6 +36,18 @@ from lxml import etree
 from mcp.server.mcpserver import MCPServer
 
 from .prompts import PROPOSE_FIX_TOOL, SYSTEM_PROMPT
+
+logger = logging.getLogger("s1000d_mcp")
+
+
+def _log_detail(context: str, exc: Exception, caller_message: str) -> str:
+    """Log the full exception detail server-side (where absolute paths and
+    library internals are fine) and return only a generic, caller-safe
+    message. Keeps raw exception text -- which can contain host paths or
+    other internals -- out of tool responses that flow back to the LLM.
+    """
+    logger.warning("%s: %s", context, exc, exc_info=True)
+    return caller_message
 
 load_dotenv()
 
@@ -269,7 +282,7 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
             "file": file_disp,
             "schema": schema_disp,
             "valid": False,
-            "errors": _fatal(f"Schema failed to load: {exc}"),
+            "errors": _fatal(_log_detail("schema load failed", exc, "The schema could not be loaded.")),
         }
 
     try:
@@ -293,7 +306,7 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
             "file": file_disp,
             "schema": schema_disp,
             "valid": False,
-            "errors": _fatal(f"Document could not be validated: {exc}"),
+            "errors": _fatal(_log_detail("schema validation error", exc, "The document could not be validated.")),
         }
     errors = [
         {
@@ -379,7 +392,9 @@ def check_cross_references(directory: str) -> dict[str, Any]:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
         except etree.XMLSyntaxError as exc:
-            parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            parse_errors.append(
+                {"file": _rel(xml_file), "message": f"XML is not well-formed: {exc.msg}"}
+            )
             continue
 
         root = doc.getroot()
@@ -761,7 +776,7 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
         act_doc = etree.parse(str(act_file), parser=_safe_parser())
     except (OSError, etree.XMLSyntaxError) as exc:
         empty_result["parse_errors"].append(
-            {"file": _rel(act_file), "message": f"Failed to load ACT: {exc}"}
+            {"file": _rel(act_file), "message": _log_detail("ACT load failed", exc, "The ACT file could not be loaded.")}
         )
         return empty_result
 
@@ -786,7 +801,9 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
         except etree.XMLSyntaxError as exc:
-            parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            parse_errors.append(
+                {"file": _rel(xml_file), "message": f"XML is not well-formed: {exc.msg}"}
+            )
             continue
 
         root = doc.getroot()
@@ -980,7 +997,7 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
             "ok": False,
             "file": file_disp,
             "model": used_model,
-            "reason": f"Could not read file: {exc}",
+            "reason": _log_detail("suggest_fix read data module", exc, "Could not read the data module file."),
         }
 
     try:
@@ -990,7 +1007,7 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
             "ok": False,
             "file": file_disp,
             "model": used_model,
-            "reason": f"Could not read schema: {exc}",
+            "reason": _log_detail("suggest_fix read schema", exc, "Could not read the schema file."),
         }
 
     user_message = (
@@ -1015,7 +1032,7 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
             "ok": False,
             "file": file_disp,
             "model": used_model,
-            "reason": f"Anthropic API error: {exc}",
+            "reason": _log_detail("Anthropic API error", exc, "The fix service returned an error."),
         }
 
     # Deterministically validate the structured output before returning it.
