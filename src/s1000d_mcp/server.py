@@ -116,6 +116,35 @@ def _rel(path: Path) -> str:
         return str(path)
 
 
+# Defensive size caps so a single oversized input can't exhaust memory
+# during a parse/read. A 68 MB XML file cost ~436 MB of RAM in testing, so
+# the cap is on file size (the real lever), plus a length cap on free-text
+# string parameters. Override the file cap with S1000D_MCP_MAX_FILE_BYTES.
+MAX_FILE_BYTES = int(os.environ.get("S1000D_MCP_MAX_FILE_BYTES", 10_000_000))
+MAX_STR_LEN = int(os.environ.get("S1000D_MCP_MAX_STR_LEN", 100_000))
+
+
+class InputTooLarge(ValueError):
+    """A caller-supplied file or string exceeds its configured size cap."""
+
+
+def _check_file_size(path: Path) -> None:
+    """Raise InputTooLarge if the file at ``path`` is larger than
+    MAX_FILE_BYTES. Called before the file is parsed or read into memory,
+    so an oversized input is rejected cheaply instead of being loaded.
+    Missing/unreadable files are left for the caller's own existence check.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size > MAX_FILE_BYTES:
+        raise InputTooLarge(
+            f"file is too large: {size} bytes exceeds the "
+            f"{MAX_FILE_BYTES}-byte limit"
+        )
+
+
 def _dmc_key(dm_code_el: etree._Element) -> str:
     """Build a canonical, comparable string key from a <dmCode> element's
     attributes, used both as a module's own identity and to match dmRef
@@ -185,6 +214,18 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
             "schema": schema_disp,
             "valid": False,
             "errors": _fatal(f"File not found: {file_disp}"),
+        }
+
+    # Reject an oversized document or schema before parsing it into memory.
+    try:
+        _check_file_size(target)
+        _check_file_size(xsd_path)
+    except InputTooLarge as exc:
+        return {
+            "file": file_disp,
+            "schema": schema_disp,
+            "valid": False,
+            "errors": _fatal(str(exc)),
         }
 
     # XMLSyntaxError added: a malformed schema file otherwise escaped this
@@ -289,7 +330,11 @@ def check_cross_references(directory: str) -> dict[str, Any]:
 
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
+            _check_file_size(xml_file)
             doc = etree.parse(str(xml_file))
+        except InputTooLarge as exc:
+            parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            continue
         except etree.XMLSyntaxError as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
@@ -421,7 +466,7 @@ def generate_data_module_skeleton(
             should always be True for well-formed inputs)
           - errors: schema errors, if any
     """
-    if content_type not in ("procedural", "descriptive"):
+    def _reject(message: str) -> dict[str, Any]:
         return {
             "xml": None,
             "dmc": None,
@@ -429,17 +474,25 @@ def generate_data_module_skeleton(
             "file": None,
             "valid": False,
             "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": (
-                        "content_type must be 'procedural' or 'descriptive', "
-                        f"got {content_type!r}"
-                    ),
-                }
+                {"line": None, "column": None, "level": "fatal", "message": message}
             ],
         }
+
+    # Cap the free-text title fields; they are written verbatim into the
+    # generated file, so an oversized value is both a memory and an output
+    # concern.
+    for field, value in (("tech_name", tech_name), ("info_name", info_name)):
+        if len(value) > MAX_STR_LEN:
+            return _reject(
+                f"{field} is too long: {len(value)} characters exceeds the "
+                f"{MAX_STR_LEN}-character limit"
+            )
+
+    if content_type not in ("procedural", "descriptive"):
+        return _reject(
+            "content_type must be 'procedural' or 'descriptive', "
+            f"got {content_type!r}"
+        )
 
     missing = [part for part in DMC_PART_NAMES if part not in dmc]
     if missing:
@@ -684,7 +737,11 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
 
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
+            _check_file_size(xml_file)
             doc = etree.parse(str(xml_file))
+        except InputTooLarge as exc:
+            parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            continue
         except etree.XMLSyntaxError as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
@@ -844,6 +901,18 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
             "file": file_disp,
             "model": used_model,
             "reason": f"File not found: {file_disp}",
+        }
+
+    # Reject an oversized file before reading it -- this both protects memory
+    # and caps how much document text is sent to the API.
+    try:
+        _check_file_size(target)
+    except InputTooLarge as exc:
+        return {
+            "ok": False,
+            "file": file_disp,
+            "model": used_model,
+            "reason": str(exc),
         }
 
     try:
