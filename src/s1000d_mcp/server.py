@@ -63,6 +63,37 @@ DEFAULT_ACT_PATH = REPO_ROOT / "schemas" / "s1000d_mcp_sample_act.xml"
 # the ANTHROPIC_MODEL environment variable is set.
 DEFAULT_MODEL = "claude-haiku-4-5"
 
+# Models suggest_fix is allowed to call. A caller-supplied `model` outside
+# this set is refused, so a caller cannot point the tool at an arbitrarily
+# expensive model to run up cost. Override with S1000D_MCP_ALLOWED_MODELS
+# (comma-separated).
+ALLOWED_MODELS = frozenset(
+    m.strip()
+    for m in os.environ.get(
+        "S1000D_MCP_ALLOWED_MODELS", "claude-haiku-4-5,claude-sonnet-4-5"
+    ).split(",")
+    if m.strip()
+)
+
+
+def _safe_parser() -> etree.XMLParser:
+    """A fresh XML parser with entity resolution, network access, and DTD
+    loading explicitly disabled.
+
+    lxml's modern defaults already refuse these, so this is defense against
+    a future default change or dependency bump silently re-enabling XXE --
+    it does not fix a live hole. A new parser is returned per call because
+    lxml parsers are not safe to share across threads. Pinned by
+    tests/security/test_xxe.py.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        dtd_validation=False,
+        huge_tree=False,
+    )
+
 
 @mcp.tool()
 def ping(message: str = "hello from s1000d-mcp") -> str:
@@ -165,7 +196,7 @@ def _dmc_key(dm_code_el: etree._Element) -> str:
 
 
 def _load_schema(schema_path: Path) -> etree.XMLSchema:
-    return etree.XMLSchema(etree.parse(str(schema_path)))
+    return etree.XMLSchema(etree.parse(str(schema_path), parser=_safe_parser()))
 
 
 @mcp.tool()
@@ -242,7 +273,7 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
         }
 
     try:
-        doc = etree.parse(str(target))
+        doc = etree.parse(str(target), parser=_safe_parser())
     except etree.XMLSyntaxError as exc:
         return {
             "file": file_disp,
@@ -251,7 +282,19 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
             "errors": _fatal(f"XML is not well-formed: {exc.msg}", exc.lineno, exc.offset),
         }
 
-    is_valid = schema.validate(doc)
+    # schema.validate can raise on a document the hardened parser accepts but
+    # the validator can't process -- e.g. one containing an unresolved entity
+    # reference (kept as a node because resolve_entities is off). Treat that
+    # as invalid rather than letting it crash the tool.
+    try:
+        is_valid = schema.validate(doc)
+    except etree.LxmlError as exc:
+        return {
+            "file": file_disp,
+            "schema": schema_disp,
+            "valid": False,
+            "errors": _fatal(f"Document could not be validated: {exc}"),
+        }
     errors = [
         {
             "line": entry.line,
@@ -331,7 +374,7 @@ def check_cross_references(directory: str) -> dict[str, Any]:
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
             _check_file_size(xml_file)
-            doc = etree.parse(str(xml_file))
+            doc = etree.parse(str(xml_file), parser=_safe_parser())
         except InputTooLarge as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
@@ -570,7 +613,7 @@ def generate_data_module_skeleton(
 </dmodule>
 """
 
-    parsed = etree.fromstring(xml.encode("utf-8"))
+    parsed = etree.fromstring(xml.encode("utf-8"), parser=_safe_parser())
     dmcode_el = parsed.find(
         "s1kdmcp:identAndStatusSection/s1kdmcp:dmAddress/"
         "s1kdmcp:dmIdent/s1kdmcp:dmCode",
@@ -715,7 +758,7 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
         return empty_result
 
     try:
-        act_doc = etree.parse(str(act_file))
+        act_doc = etree.parse(str(act_file), parser=_safe_parser())
     except (OSError, etree.XMLSyntaxError) as exc:
         empty_result["parse_errors"].append(
             {"file": _rel(act_file), "message": f"Failed to load ACT: {exc}"}
@@ -738,7 +781,7 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
             _check_file_size(xml_file)
-            doc = etree.parse(str(xml_file))
+            doc = etree.parse(str(xml_file), parser=_safe_parser())
         except InputTooLarge as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
             continue
@@ -879,6 +922,21 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
               response, etc.) -- this tool never raises
     """
     used_model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+    # Refuse a model outside the allowed set, before doing any work. A
+    # caller-chosen model could otherwise be the most expensive one available
+    # (cost abuse); the allowlist keeps model choice under the operator's
+    # control, not the caller's.
+    if used_model not in ALLOWED_MODELS:
+        return {
+            "ok": False,
+            "file": dm_path,
+            "model": used_model,
+            "reason": (
+                f"model {used_model!r} is not in the allowed set; "
+                "set S1000D_MCP_ALLOWED_MODELS to permit it"
+            ),
+        }
 
     # Resolve through the boundary before any read -- this is the tool that
     # would otherwise send an out-of-bounds file's contents to the API, so
