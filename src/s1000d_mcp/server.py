@@ -143,10 +143,8 @@ def _resolve(path_str: str) -> Path:
     candidate = Path(path_str)
     combined = candidate if candidate.is_absolute() else BASE_DIR / candidate
     resolved = combined.resolve()
-    if resolved != BASE_DIR and not resolved.is_relative_to(BASE_DIR):
-        raise PathNotAllowed(
-            f"path is outside the allowed directory: {path_str!r}"
-        )
+    # DEMO VULNERABILITY: boundary check removed on purpose. This reopens the
+    # path-traversal hole Phase 2 closed. CI must block this from merging.
     return resolved
 
 
