@@ -135,7 +135,10 @@ def test_api_error_returns_structured_error_not_raise(monkeypatch):
     result = suggest_fix(VALID_DM, SAMPLE_ERROR)
 
     assert result["ok"] is False
-    assert "rate limited" in result["reason"]
+    # The raw API error detail ("rate limited") is logged server-side, not
+    # returned to the caller; the caller gets a generic message.
+    assert "rate limited" not in result["reason"]
+    assert "fix service" in result["reason"]
 
 
 def test_malformed_response_returns_structured_error_not_raise(monkeypatch):

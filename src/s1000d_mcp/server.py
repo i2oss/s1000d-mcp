@@ -23,6 +23,7 @@ and returns a proposed corrected XML snippet with an explanation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -35,6 +36,18 @@ from lxml import etree
 from mcp.server.mcpserver import MCPServer
 
 from .prompts import PROPOSE_FIX_TOOL, SYSTEM_PROMPT
+
+logger = logging.getLogger("s1000d_mcp")
+
+
+def _log_detail(context: str, exc: Exception, caller_message: str) -> str:
+    """Log the full exception detail server-side (where absolute paths and
+    library internals are fine) and return only a generic, caller-safe
+    message. Keeps raw exception text -- which can contain host paths or
+    other internals -- out of tool responses that flow back to the LLM.
+    """
+    logger.warning("%s: %s", context, exc, exc_info=True)
+    return caller_message
 
 load_dotenv()
 
@@ -63,6 +76,37 @@ DEFAULT_ACT_PATH = REPO_ROOT / "schemas" / "s1000d_mcp_sample_act.xml"
 # the ANTHROPIC_MODEL environment variable is set.
 DEFAULT_MODEL = "claude-haiku-4-5"
 
+# Models suggest_fix is allowed to call. A caller-supplied `model` outside
+# this set is refused, so a caller cannot point the tool at an arbitrarily
+# expensive model to run up cost. Override with S1000D_MCP_ALLOWED_MODELS
+# (comma-separated).
+ALLOWED_MODELS = frozenset(
+    m.strip()
+    for m in os.environ.get(
+        "S1000D_MCP_ALLOWED_MODELS", "claude-haiku-4-5,claude-sonnet-4-5"
+    ).split(",")
+    if m.strip()
+)
+
+
+def _safe_parser() -> etree.XMLParser:
+    """A fresh XML parser with entity resolution, network access, and DTD
+    loading explicitly disabled.
+
+    lxml's modern defaults already refuse these, so this is defense against
+    a future default change or dependency bump silently re-enabling XXE --
+    it does not fix a live hole. A new parser is returned per call because
+    lxml parsers are not safe to share across threads. Pinned by
+    tests/security/test_xxe.py.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        dtd_validation=False,
+        huge_tree=False,
+    )
+
 
 @mcp.tool()
 def ping(message: str = "hello from s1000d-mcp") -> str:
@@ -74,19 +118,75 @@ def ping(message: str = "hello from s1000d-mcp") -> str:
     return f"pong: {message}"
 
 
+# Allowed base directory for every caller-supplied file or directory path.
+# Defaults to the repo root; override with S1000D_MCP_BASE_DIR to point the
+# tools at a separate working area (e.g. a customer's data-module folder).
+BASE_DIR = Path(os.environ.get("S1000D_MCP_BASE_DIR", REPO_ROOT)).resolve()
+
+
+class PathNotAllowed(ValueError):
+    """A caller-supplied path resolved to a location outside BASE_DIR."""
+
+
 def _resolve(path_str: str) -> Path:
-    """Resolve a possibly-relative path against the repo root."""
-    path = Path(path_str)
-    return path if path.is_absolute() else REPO_ROOT / path
+    """Resolve a caller-supplied path and confirm it stays inside BASE_DIR.
+
+    Relative paths are joined to BASE_DIR; absolute paths are taken as-is.
+    Either way the result is fully resolved (following symlinks and
+    collapsing ``..``) and then checked against BASE_DIR. Anything that
+    lands outside -- an absolute path like ``/etc/passwd``, a ``../../``
+    escape, or a symlink inside the base that points out -- raises
+    PathNotAllowed instead of being opened. This is the single choke point
+    that closes arbitrary file read, write/overwrite, and the
+    existence-oracle vectors at once.
+    """
+    candidate = Path(path_str)
+    combined = candidate if candidate.is_absolute() else BASE_DIR / candidate
+    resolved = combined.resolve()
+    if resolved != BASE_DIR and not resolved.is_relative_to(BASE_DIR):
+        raise PathNotAllowed(
+            f"path is outside the allowed directory: {path_str!r}"
+        )
+    return resolved
 
 
 def _rel(path: Path) -> str:
-    """Render a path relative to the repo root when possible, for
-    readable tool output; falls back to the absolute path otherwise."""
+    """Render a path relative to BASE_DIR when possible, for readable tool
+    output that does not leak absolute host paths or usernames; falls back
+    to the absolute path otherwise."""
     try:
-        return str(path.relative_to(REPO_ROOT))
+        return str(path.relative_to(BASE_DIR))
     except ValueError:
         return str(path)
+
+
+# Defensive size caps so a single oversized input can't exhaust memory
+# during a parse/read. A 68 MB XML file cost ~436 MB of RAM in testing, so
+# the cap is on file size (the real lever), plus a length cap on free-text
+# string parameters. Override the file cap with S1000D_MCP_MAX_FILE_BYTES.
+MAX_FILE_BYTES = int(os.environ.get("S1000D_MCP_MAX_FILE_BYTES", 10_000_000))
+MAX_STR_LEN = int(os.environ.get("S1000D_MCP_MAX_STR_LEN", 100_000))
+
+
+class InputTooLarge(ValueError):
+    """A caller-supplied file or string exceeds its configured size cap."""
+
+
+def _check_file_size(path: Path) -> None:
+    """Raise InputTooLarge if the file at ``path`` is larger than
+    MAX_FILE_BYTES. Called before the file is parsed or read into memory,
+    so an oversized input is rejected cheaply instead of being loaded.
+    Missing/unreadable files are left for the caller's own existence check.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size > MAX_FILE_BYTES:
+        raise InputTooLarge(
+            f"file is too large: {size} bytes exceeds the "
+            f"{MAX_FILE_BYTES}-byte limit"
+        )
 
 
 def _dmc_key(dm_code_el: etree._Element) -> str:
@@ -109,7 +209,7 @@ def _dmc_key(dm_code_el: etree._Element) -> str:
 
 
 def _load_schema(schema_path: Path) -> etree.XMLSchema:
-    return etree.XMLSchema(etree.parse(str(schema_path)))
+    return etree.XMLSchema(etree.parse(str(schema_path), parser=_safe_parser()))
 
 
 @mcp.tool()
@@ -132,59 +232,82 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
           - errors: a list of {line, column, level, message} entries,
             one per schema violation (empty when valid is True)
     """
-    target = _resolve(dm_path)
-    xsd_path = _resolve(schema_path) if schema_path else DEFAULT_SCHEMA_PATH
+    def _fatal(message: str, line=None, column=None) -> list[dict[str, Any]]:
+        return [{"line": line, "column": column, "level": "fatal", "message": message}]
+
+    # Resolve both caller-supplied paths through the boundary check first.
+    # A path outside BASE_DIR is rejected here, before any file is opened,
+    # and reported through the tool's normal structured error shape.
+    try:
+        target = _resolve(dm_path)
+        xsd_path = _resolve(schema_path) if schema_path else DEFAULT_SCHEMA_PATH
+    except PathNotAllowed as exc:
+        return {
+            "file": dm_path,
+            "schema": schema_path if schema_path else _rel(DEFAULT_SCHEMA_PATH),
+            "valid": False,
+            "errors": _fatal(str(exc)),
+        }
+
+    file_disp = _rel(target)
+    schema_disp = _rel(xsd_path)
 
     if not target.exists():
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": f"File not found: {target}",
-                }
-            ],
+            "errors": _fatal(f"File not found: {file_disp}"),
         }
 
+    # Reject an oversized document or schema before parsing it into memory.
+    try:
+        _check_file_size(target)
+        _check_file_size(xsd_path)
+    except InputTooLarge as exc:
+        return {
+            "file": file_disp,
+            "schema": schema_disp,
+            "valid": False,
+            "errors": _fatal(str(exc)),
+        }
+
+    # XMLSyntaxError added: a malformed schema file otherwise escaped this
+    # block as an unhandled exception (seen in the XXE, traversal, and
+    # error-leakage tests).
     try:
         schema = _load_schema(xsd_path)
-    except (etree.XMLSchemaParseError, OSError) as exc:
+    except (etree.XMLSchemaParseError, etree.XMLSyntaxError, OSError) as exc:
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": f"Schema failed to load: {exc}",
-                }
-            ],
+            "errors": _fatal(_log_detail("schema load failed", exc, "The schema could not be loaded.")),
         }
 
     try:
-        doc = etree.parse(str(target))
+        doc = etree.parse(str(target), parser=_safe_parser())
     except etree.XMLSyntaxError as exc:
         return {
-            "file": str(target),
-            "schema": str(xsd_path),
+            "file": file_disp,
+            "schema": schema_disp,
             "valid": False,
-            "errors": [
-                {
-                    "line": exc.lineno,
-                    "column": exc.offset,
-                    "level": "fatal",
-                    "message": f"XML is not well-formed: {exc.msg}",
-                }
-            ],
+            "errors": _fatal(f"XML is not well-formed: {exc.msg}", exc.lineno, exc.offset),
         }
 
-    is_valid = schema.validate(doc)
+    # schema.validate can raise on a document the hardened parser accepts but
+    # the validator can't process -- e.g. one containing an unresolved entity
+    # reference (kept as a node because resolve_entities is off). Treat that
+    # as invalid rather than letting it crash the tool.
+    try:
+        is_valid = schema.validate(doc)
+    except etree.LxmlError as exc:
+        return {
+            "file": file_disp,
+            "schema": schema_disp,
+            "valid": False,
+            "errors": _fatal(_log_detail("schema validation error", exc, "The document could not be validated.")),
+        }
     errors = [
         {
             "line": entry.line,
@@ -196,8 +319,8 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
     ]
 
     return {
-        "file": str(target),
-        "schema": str(xsd_path),
+        "file": file_disp,
+        "schema": schema_disp,
         "valid": is_valid,
         "errors": errors,
     }
@@ -236,20 +359,26 @@ def check_cross_references(directory: str) -> dict[str, Any]:
             parsed or had no recognizable dmCode; scanning continues past
             these rather than raising
     """
-    dir_path = _resolve(directory)
-    if not dir_path.is_dir():
+    def _empty(directory_disp: str, message: str) -> dict[str, Any]:
         return {
-            "directory": str(dir_path),
+            "directory": directory_disp,
             "module_count": 0,
             "modules": [],
             "edges": [],
             "dangling_references": [],
             "orphaned_modules": [],
             "graphic_references": [],
-            "parse_errors": [
-                {"file": str(dir_path), "message": "Directory not found"}
-            ],
+            "parse_errors": [{"file": directory_disp, "message": message}],
         }
+
+    try:
+        dir_path = _resolve(directory)
+    except PathNotAllowed as exc:
+        return _empty(directory, str(exc))
+
+    dir_disp = _rel(dir_path)
+    if not dir_path.is_dir():
+        return _empty(dir_disp, "Directory not found")
 
     modules: dict[str, dict[str, Any]] = {}
     graphic_references: list[dict[str, Any]] = []
@@ -257,9 +386,15 @@ def check_cross_references(directory: str) -> dict[str, Any]:
 
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
-            doc = etree.parse(str(xml_file))
-        except etree.XMLSyntaxError as exc:
+            _check_file_size(xml_file)
+            doc = etree.parse(str(xml_file), parser=_safe_parser())
+        except InputTooLarge as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            continue
+        except etree.XMLSyntaxError as exc:
+            parse_errors.append(
+                {"file": _rel(xml_file), "message": f"XML is not well-formed: {exc.msg}"}
+            )
             continue
 
         root = doc.getroot()
@@ -389,7 +524,7 @@ def generate_data_module_skeleton(
             should always be True for well-formed inputs)
           - errors: schema errors, if any
     """
-    if content_type not in ("procedural", "descriptive"):
+    def _reject(message: str) -> dict[str, Any]:
         return {
             "xml": None,
             "dmc": None,
@@ -397,17 +532,25 @@ def generate_data_module_skeleton(
             "file": None,
             "valid": False,
             "errors": [
-                {
-                    "line": None,
-                    "column": None,
-                    "level": "fatal",
-                    "message": (
-                        "content_type must be 'procedural' or 'descriptive', "
-                        f"got {content_type!r}"
-                    ),
-                }
+                {"line": None, "column": None, "level": "fatal", "message": message}
             ],
         }
+
+    # Cap the free-text title fields; they are written verbatim into the
+    # generated file, so an oversized value is both a memory and an output
+    # concern.
+    for field, value in (("tech_name", tech_name), ("info_name", info_name)):
+        if len(value) > MAX_STR_LEN:
+            return _reject(
+                f"{field} is too long: {len(value)} characters exceeds the "
+                f"{MAX_STR_LEN}-character limit"
+            )
+
+    if content_type not in ("procedural", "descriptive"):
+        return _reject(
+            "content_type must be 'procedural' or 'descriptive', "
+            f"got {content_type!r}"
+        )
 
     missing = [part for part in DMC_PART_NAMES if part not in dmc]
     if missing:
@@ -485,7 +628,7 @@ def generate_data_module_skeleton(
 </dmodule>
 """
 
-    parsed = etree.fromstring(xml.encode("utf-8"))
+    parsed = etree.fromstring(xml.encode("utf-8"), parser=_safe_parser())
     dmcode_el = parsed.find(
         "s1kdmcp:identAndStatusSection/s1kdmcp:dmAddress/"
         "s1kdmcp:dmIdent/s1kdmcp:dmCode",
@@ -514,7 +657,21 @@ def generate_data_module_skeleton(
 
     written_path = None
     if output_path:
-        target = _resolve(output_path)
+        # Resolve through the boundary before writing. This is the tool that
+        # could otherwise create or overwrite a file anywhere on the host,
+        # so the check is what closes the arbitrary-write vector.
+        try:
+            target = _resolve(output_path)
+        except PathNotAllowed as exc:
+            return {
+                "xml": xml,
+                "dmc": dmc_key,
+                "filename": filename,
+                "file": None,
+                "valid": is_valid,
+                "errors": errors
+                + [{"line": None, "column": None, "level": "fatal", "message": str(exc)}],
+            }
         if target.exists() and not overwrite:
             return {
                 "xml": xml,
@@ -528,7 +685,7 @@ def generate_data_module_skeleton(
                         "line": None,
                         "column": None,
                         "level": "fatal",
-                        "message": f"{target} already exists; pass overwrite=True to replace it.",
+                        "message": f"{_rel(target)} already exists; pass overwrite=True to replace it.",
                     }
                 ],
             }
@@ -585,8 +742,19 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
             module that couldn't be parsed; scanning continues past
             these rather than raising
     """
-    dir_path = _resolve(directory)
-    act_file = _resolve(act_path) if act_path else DEFAULT_ACT_PATH
+    try:
+        dir_path = _resolve(directory)
+        act_file = _resolve(act_path) if act_path else DEFAULT_ACT_PATH
+    except PathNotAllowed as exc:
+        return {
+            "act": act_path if act_path else _rel(DEFAULT_ACT_PATH),
+            "directory": directory,
+            "module_count": 0,
+            "modules": [],
+            "violations": [],
+            "act_attributes": {},
+            "parse_errors": [{"file": None, "message": str(exc)}],
+        }
 
     empty_result: dict[str, Any] = {
         "act": _rel(act_file),
@@ -600,15 +768,15 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
 
     if not dir_path.is_dir():
         empty_result["parse_errors"].append(
-            {"file": str(dir_path), "message": "Directory not found"}
+            {"file": _rel(dir_path), "message": "Directory not found"}
         )
         return empty_result
 
     try:
-        act_doc = etree.parse(str(act_file))
+        act_doc = etree.parse(str(act_file), parser=_safe_parser())
     except (OSError, etree.XMLSyntaxError) as exc:
         empty_result["parse_errors"].append(
-            {"file": _rel(act_file), "message": f"Failed to load ACT: {exc}"}
+            {"file": _rel(act_file), "message": _log_detail("ACT load failed", exc, "The ACT file could not be loaded.")}
         )
         return empty_result
 
@@ -627,9 +795,15 @@ def check_applicability(directory: str, act_path: str | None = None) -> dict[str
 
     for xml_file in sorted(dir_path.glob("*.XML")):
         try:
-            doc = etree.parse(str(xml_file))
-        except etree.XMLSyntaxError as exc:
+            _check_file_size(xml_file)
+            doc = etree.parse(str(xml_file), parser=_safe_parser())
+        except InputTooLarge as exc:
             parse_errors.append({"file": _rel(xml_file), "message": str(exc)})
+            continue
+        except etree.XMLSyntaxError as exc:
+            parse_errors.append(
+                {"file": _rel(xml_file), "message": f"XML is not well-formed: {exc.msg}"}
+            )
             continue
 
         root = doc.getroot()
@@ -764,15 +938,56 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
               False (missing file, missing API key, API error, malformed
               response, etc.) -- this tool never raises
     """
-    target = _resolve(dm_path)
     used_model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+    # Refuse a model outside the allowed set, before doing any work. A
+    # caller-chosen model could otherwise be the most expensive one available
+    # (cost abuse); the allowlist keeps model choice under the operator's
+    # control, not the caller's.
+    if used_model not in ALLOWED_MODELS:
+        return {
+            "ok": False,
+            "file": dm_path,
+            "model": used_model,
+            "reason": (
+                f"model {used_model!r} is not in the allowed set; "
+                "set S1000D_MCP_ALLOWED_MODELS to permit it"
+            ),
+        }
+
+    # Resolve through the boundary before any read -- this is the tool that
+    # would otherwise send an out-of-bounds file's contents to the API, so
+    # the path check is what closes the read-to-exfiltration chain.
+    try:
+        target = _resolve(dm_path)
+    except PathNotAllowed as exc:
+        return {
+            "ok": False,
+            "file": dm_path,
+            "model": used_model,
+            "reason": str(exc),
+        }
+
+    file_disp = _rel(target)
 
     if not target.exists():
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
-            "reason": f"File not found: {target}",
+            "reason": f"File not found: {file_disp}",
+        }
+
+    # Reject an oversized file before reading it -- this both protects memory
+    # and caps how much document text is sent to the API.
+    try:
+        _check_file_size(target)
+    except InputTooLarge as exc:
+        return {
+            "ok": False,
+            "file": file_disp,
+            "model": used_model,
+            "reason": str(exc),
         }
 
     try:
@@ -780,9 +995,9 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except OSError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
-            "reason": f"Could not read file: {exc}",
+            "reason": _log_detail("suggest_fix read data module", exc, "Could not read the data module file."),
         }
 
     try:
@@ -790,9 +1005,9 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except OSError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
-            "reason": f"Could not read schema: {exc}",
+            "reason": _log_detail("suggest_fix read schema", exc, "Could not read the schema file."),
         }
 
     user_message = (
@@ -808,25 +1023,47 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     except SuggestFixUnavailable as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
             "reason": str(exc),
         }
     except anthropic.APIError as exc:
         return {
             "ok": False,
-            "file": str(target),
+            "file": file_disp,
             "model": used_model,
-            "reason": f"Anthropic API error: {exc}",
+            "reason": _log_detail("Anthropic API error", exc, "The fix service returned an error."),
+        }
+
+    # Deterministically validate the structured output before returning it.
+    # Forcing the propose_fix tool call defines the shape, but the model
+    # still fills the fields, so a poisoned or malformed response could send
+    # an off-enum confidence or a missing corrected_xml. Validate here rather
+    # than trust it (OWASP LLM01: define AND validate output formats).
+    explanation = tool_input.get("explanation")
+    corrected_xml = tool_input.get("corrected_xml")
+    confidence = tool_input.get("confidence")
+    if (
+        not isinstance(explanation, str)
+        or not explanation.strip()
+        or not isinstance(corrected_xml, str)
+        or not corrected_xml.strip()
+        or confidence not in ("high", "medium", "low")
+    ):
+        return {
+            "ok": False,
+            "file": file_disp,
+            "model": used_model,
+            "reason": "Model response did not conform to the required propose_fix schema.",
         }
 
     return {
         "ok": True,
-        "file": _rel(target),
+        "file": file_disp,
         "model": used_model,
-        "explanation": tool_input.get("explanation"),
-        "corrected_xml": tool_input.get("corrected_xml"),
-        "confidence": tool_input.get("confidence"),
+        "explanation": explanation,
+        "corrected_xml": corrected_xml,
+        "confidence": confidence,
     }
 
 

@@ -1,0 +1,29 @@
+# Security-suite config for s1000d-mcp. Consumed by mcp-security-suite in CI
+# (see .github/workflows/security.yml).
+
+[server]
+command = "s1000d-mcp"          # console script, on PATH inside the uv venv
+args = []
+timeout = 8.0
+
+[scan]
+# suggest_fix needs a live Anthropic key (not present in CI); ping is a
+# trivial health check with nothing to fuzz.
+skip_tools = ["suggest_fix", "ping"]
+
+# Give the skeleton tool valid required args so probes reach its real code
+# path instead of failing argument validation first.
+[scan.tool_arg_overrides.generate_data_module_skeleton]
+tech_name = "APU"
+info_name = "Remove"
+dmc = { modelIdentCode = "MERM100", systemDiffCode = "A", systemCode = "049", subSystemCode = "0", subSubSystemCode = "0", assyCode = "00", disassyCode = "00", disassyCodeVariant = "A", infoCode = "040", infoCodeVariant = "A", itemLocationCode = "A" }
+
+[gate]
+fail_on = "high"               # fail on any un-waived high/critical finding
+
+# The tools reflect the caller-supplied path back in status/error fields.
+# Reviewed and accepted as low risk (the caller already supplied the value);
+# reported in the scan but not gated.
+[[waivers]]
+category = "output-injection"
+reason = "Tools echo the caller's own input path in status fields; low risk, accepted 2026-09."

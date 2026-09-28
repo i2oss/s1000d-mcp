@@ -1,0 +1,36 @@
+name: Security
+
+# The security gate. Runs on every push and PR to main, plus weekly.
+# Two required jobs:
+#   - scan:           layers 1 (bandit/pip-audit/gitleaks) + 2 (protocol fuzz)
+#   - security-tests: this repo's own tests/security/ (XXE, injection, the
+#                     Phase 1 attack regression suite)
+# A PR can't merge into main unless both are green (enforced by branch
+# protection on main).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"   # weekly Monday 06:00 UTC — catches dependency drift
+
+jobs:
+  scan:
+    uses: i2oss/mcp-security-suite/.github/workflows/scan.yml@v1
+    with:
+      config: mcp-security.toml
+
+  security-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install
+        run: uv sync --all-extras --dev
+      - name: Run security tests
+        run: uv run pytest tests/security/ -v
