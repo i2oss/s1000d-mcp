@@ -35,6 +35,7 @@ from dotenv import load_dotenv
 from lxml import etree
 from mcp.server.mcpserver import MCPServer
 
+from .observability import configure_tracing, instrument_tool, record_llm_usage
 from .prompts import PROPOSE_FIX_TOOL, SYSTEM_PROMPT
 
 logger = logging.getLogger("s1000d_mcp")
@@ -109,6 +110,7 @@ def _safe_parser() -> etree.XMLParser:
 
 
 @mcp.tool()
+@instrument_tool
 def ping(message: str = "hello from s1000d-mcp") -> str:
     """Health-check tool: echoes a message back with a server tag.
 
@@ -213,6 +215,7 @@ def _load_schema(schema_path: Path) -> etree.XMLSchema:
 
 
 @mcp.tool()
+@instrument_tool
 def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[str, Any]:
     """Validate a data module XML file against the S1000D subset XSD.
 
@@ -327,6 +330,7 @@ def validate_xml_schema(dm_path: str, schema_path: str | None = None) -> dict[st
 
 
 @mcp.tool()
+@instrument_tool
 def check_cross_references(directory: str) -> dict[str, Any]:
     """Build a reference graph across a directory of data modules.
 
@@ -481,6 +485,7 @@ DMC_PART_NAMES = (
 
 
 @mcp.tool()
+@instrument_tool
 def generate_data_module_skeleton(
     dmc: dict[str, str],
     tech_name: str,
@@ -704,6 +709,7 @@ def generate_data_module_skeleton(
 
 
 @mcp.tool()
+@instrument_tool
 def check_applicability(directory: str, act_path: str | None = None) -> dict[str, Any]:
     """Check a directory of data modules' applicability assertions against
     a sample Applicability Cross-reference Table (ACT).
@@ -906,6 +912,7 @@ def _extract_tool_input(message: Any) -> dict[str, Any]:
 
 
 @mcp.tool()
+@instrument_tool
 def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -> dict[str, Any]:
     """Ask Claude to propose a fix for one validation error in a data module.
 
@@ -1019,6 +1026,9 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
     try:
         client = _get_anthropic_client()
         response = _call_propose_fix_api(client, used_model, SYSTEM_PROMPT, user_message)
+        # Attach token counts and estimated cost to this tool's span. Pure
+        # telemetry -- never affects the result or the hardened error paths.
+        record_llm_usage(used_model, getattr(response, "usage", None))
         tool_input = _extract_tool_input(response)
     except SuggestFixUnavailable as exc:
         return {
@@ -1069,6 +1079,10 @@ def suggest_fix(dm_path: str, error: dict[str, Any], model: str | None = None) -
 
 def main() -> None:
     """Entry point for the `s1000d-mcp` console script (stdio transport)."""
+    # Turn on tracing before serving. Exporter/destination come from the
+    # environment (file by default, console->stderr, or disabled); never
+    # stdout, which carries the JSON-RPC protocol.
+    configure_tracing()
     mcp.run(transport="stdio")
 
 
