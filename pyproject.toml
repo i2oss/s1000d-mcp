@@ -11,10 +11,13 @@ dependencies = [
     "lxml>=5.0.0",
     "anthropic>=1.7.0",
     "python-dotenv>=1.2.3",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
 ]
 
 [project.scripts]
 s1000d-mcp = "s1000d_mcp.server:main"
+s1000d-mcp-trace-report = "s1000d_mcp.trace_report:main"
 
 [build-system]
 requires = ["hatchling"]

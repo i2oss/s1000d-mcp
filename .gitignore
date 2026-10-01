@@ -29,3 +29,6 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# Observability trace output (JSONL span log)
+*.jsonl
